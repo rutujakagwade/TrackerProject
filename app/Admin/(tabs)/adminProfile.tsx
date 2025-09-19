@@ -70,28 +70,43 @@ const AdminProfile: React.FC = () => {
     setAvatar(`https://api.dicebear.com/7.x/${selectedStyle}/svg?seed=${seed}`);
   }, [selectedStyle, seed]);
 
-  const handleSaveProfile = async () => {
-    try {
-      setSaving(true);
-      const token = await AsyncStorage.getItem("token");
-      if (!token) {
-        Alert.alert("Unauthorized", "Please login again.");
-        return;
-      }
-
-      await updateAdminProfile({ name, avatar, seed, style: selectedStyle }, token);
-
-      Alert.alert("Success", "Profile updated successfully!");
-      setShowModal(false);
-    } catch (error: unknown) {
-      console.error("Error updating profile:", error);
-      let message = "Failed to update profile";
-      if (error instanceof Error) message = error.message;
-      Alert.alert("Error", message);
-    } finally {
-      setSaving(false);
+ const handleSaveProfile = async () => {
+  try {
+    setSaving(true);
+    const token = await AsyncStorage.getItem("token");
+    if (!token) {
+      Alert.alert("Unauthorized", "Please login again.");
+      return;
     }
-  };
+
+    // Update backend
+    await updateAdminProfile({ name, avatar, seed, style: selectedStyle }, token);
+
+    // Fetch updated profile from backend
+    const updatedData = await getAdminProfile(token);
+    const profile = (updatedData as any).admin || updatedData;
+
+    setName(profile.name || "");
+    setEmail(profile.email || "");
+    setSeed(profile.seed || "admin123");
+    setSelectedStyle(profile.style || "identicon");
+    setAvatar(
+      profile.avatar ||
+        `https://api.dicebear.com/7.x/${profile.style || "identicon"}/svg?seed=${profile.seed || "admin123"}`
+    );
+
+    Alert.alert("Success", "Profile updated successfully!");
+    setShowModal(false);
+  } catch (error: unknown) {
+    console.error("Error updating profile:", error);
+    let message = "Failed to update profile";
+    if (error instanceof Error) message = error.message;
+    Alert.alert("Error", message);
+  } finally {
+    setSaving(false);
+  }
+};
+
 
   if (loading) {
     return (

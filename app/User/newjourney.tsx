@@ -1,200 +1,228 @@
-import React, { useState } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import {
-  SafeAreaView,
   View,
   Text,
-  TouchableOpacity,
   TextInput,
-  StyleSheet,
+  TouchableOpacity,
   ScrollView,
-  Dimensions,
+  Alert,
+  StyleSheet,
 } from "react-native";
-import { Ionicons } from "@expo/vector-icons";
-import { Link } from "expo-router";
+import MapView, { Marker, Polyline, UrlTile, LatLng } from "react-native-maps";
+import * as Location from "expo-location";
+import { createJourney } from "../../lib/api";
+import { NativeStackScreenProps } from "@react-navigation/native-stack";
+import { Linking } from "react-native";
 
-export default function NewJourneyScreen() {
+
+type RootStackParamList = {
+  NewJourney: undefined;
+  JourneyTracking: { journey: any };
+};
+
+type Props = NativeStackScreenProps<RootStackParamList, "NewJourney">;
+
+export default function NewJourney({ navigation }: Props) {
+  const [startLocation, setStartLocation] = useState<LatLng | null>(null);
+  const [endLocation, setEndLocation] = useState<LatLng | null>(null);
+  const [routeCoords, setRouteCoords] = useState<LatLng[]>([]);
   const [purpose, setPurpose] = useState("");
   const [notes, setNotes] = useState("");
+  const [region, setRegion] = useState<any>(null);
 
-  // Mock coordinates
-  const start = { latitude: 18.5204, longitude: 73.8567 };
-  const end = { latitude: 18.5380, longitude: 73.8850 };
+  const mapRef = useRef<MapView>(null);
 
-  const handleStartJourney = () => {
-    // Normally you would navigate to JourneyMap, but for now just alert
-    alert(`Journey started!\nStart: ${start.latitude}, ${start.longitude}\nEnd: ${end.latitude}, ${end.longitude}`);
+  const OPENROUTE_API_KEY = "eyJvcmciOiI1YjNjZTM1OTc4NTExMTAwMDFjZjYyNDgiLCJpZCI6IjBlYzA3MmE5N2RkYjQ2OWQ4YzZjYjE5ZDdjMjY2OWM1IiwiaCI6Im11cm11cjY0In0="; // replace with your key
+
+  // Get user location
+  useEffect(() => {
+    (async () => {
+      try {
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        if (status !== "granted") {
+          Alert.alert(
+            "Permission Denied",
+            "Allow location access to pick journey locations"
+          );
+          return;
+        }
+        const loc = await Location.getCurrentPositionAsync({});
+        const coords = {
+          latitude: loc.coords.latitude,
+          longitude: loc.coords.longitude,
+        };
+        setStartLocation(coords);
+        setRegion({ ...coords, latitudeDelta: 0.05, longitudeDelta: 0.05 });
+      } catch {
+        Alert.alert("Error", "Failed to get current location");
+      }
+    })();
+  }, []);
+
+  // Fetch route from OpenRouteService
+  const fetchRoute = async (start: LatLng, end: LatLng) => {
+    try {
+      const res = await fetch(
+        "https://api.openrouteservice.org/v2/directions/driving-car/geojson",
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${OPENROUTE_API_KEY}`, // must include Bearer
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            coordinates: [
+              [start.longitude, start.latitude],
+              [end.longitude, end.latitude],
+            ],
+          }),
+        }
+      );
+
+      const data = await res.json();
+      if (!data.features || !data.features[0]) {
+        Alert.alert("Route Error", "Could not get route");
+        return;
+      }
+
+      const line: LatLng[] = data.features[0].geometry.coordinates.map(
+        (c: number[]) => ({ longitude: c[0], latitude: c[1] })
+      );
+      setRouteCoords(line);
+
+      if (mapRef.current) {
+        mapRef.current.fitToCoordinates(line, {
+          edgePadding: { top: 50, right: 50, bottom: 50, left: 50 },
+          animated: true,
+        });
+      }
+    } catch (err) {
+      console.error(err);
+      Alert.alert("Error", "Failed to fetch route");
+    }
   };
 
+  // Update route whenever start/end locations are set
+  useEffect(() => {
+    if (startLocation && endLocation) fetchRoute(startLocation, endLocation);
+  }, [startLocation, endLocation]);
+
+ const handleStartJourney = async () => {
+  if (!startLocation || !endLocation || !purpose) {
+    return Alert.alert("Please select end location and add purpose");
+  }
+
+  try {
+    const res = await createJourney({
+      title: `Journey: ${startLocation.latitude},${startLocation.longitude} → ${endLocation.latitude},${endLocation.longitude}`,
+      description: notes,
+      status: "ongoing",
+      startLocation,
+      endLocation,
+      routeCoords,
+      purpose,
+    });
+
+    if (res.error) return Alert.alert(res.error);
+
+    // ✅ Open Google Maps with directions, distance & time displayed
+    const url = `https://www.google.com/maps/dir/?api=1&origin=${startLocation.latitude},${startLocation.longitude}&destination=${endLocation.latitude},${endLocation.longitude}&travelmode=driving`;
+    
+    const supported = await Linking.canOpenURL(url);
+    if (supported) {
+      Linking.openURL(url);
+    } else {
+      Alert.alert("Error", "Cannot open Google Maps");
+    }
+
+  } catch (err) {
+    console.error(err);
+    Alert.alert("Error", "Failed to start journey");
+  }
+};
+
   return (
-    <SafeAreaView style={styles.safe}>
-      {/* Header */}
-      <View style={styles.header}>
-        <TouchableOpacity style={styles.back} onPress={() => alert("Go Back")}>
-          <Ionicons name="arrow-back" size={22} color="#222" />
+    <ScrollView style={{ flex: 1 }}>
+      <View style={{ padding: 10 }}>
+        <Text style={styles.heading}>New Journey</Text>
+
+        <View style={{ height: 400, marginVertical: 10 }}>
+          {region ? (
+            <MapView
+              ref={mapRef}
+              style={{ flex: 1 }}
+              initialRegion={region}
+              showsUserLocation
+              showsMyLocationButton
+              onPress={(e) => {
+                setEndLocation(e.nativeEvent.coordinate);
+                Alert.alert("End Location Set");
+              }}
+            >
+              <UrlTile
+                urlTemplate={`https://api.openrouteservice.org/mapsurfer/{z}/{x}/{y}.png?api_key=${OPENROUTE_API_KEY}`}
+                maximumZ={19}
+                flipY={false}
+              />
+              {startLocation && (
+                <Marker coordinate={startLocation} title="Start" pinColor="green" />
+              )}
+              {endLocation && (
+                <Marker coordinate={endLocation} title="End" pinColor="red" />
+              )}
+              {routeCoords.length > 0 && (
+                <Polyline coordinates={routeCoords} strokeColor="blue" strokeWidth={4} />
+              )}
+            </MapView>
+          ) : (
+            <Text>Loading map...</Text>
+          )}
+        </View>
+
+        <Text>
+          Start:{" "}
+          {startLocation
+            ? `${startLocation.latitude}, ${startLocation.longitude}`
+            : "Loading"}
+        </Text>
+        <Text>
+          End:{" "}
+          {endLocation
+            ? `${endLocation.latitude}, ${endLocation.longitude}`
+            : "Tap map"}
+        </Text>
+
+        <TextInput
+          placeholder="Purpose"
+          value={purpose}
+          onChangeText={setPurpose}
+          style={styles.input}
+        />
+        <TextInput
+          placeholder="Notes"
+          value={notes}
+          onChangeText={setNotes}
+          style={styles.input}
+        />
+
+        <TouchableOpacity onPress={handleStartJourney} style={styles.buttonBlack}>
+          <Text style={styles.buttonText}>Start Journey</Text>
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>New Journey</Text>
+        <TouchableOpacity
+          onPress={() => navigation.goBack()}
+          style={styles.buttonGray}
+        >
+          <Text style={styles.buttonText}>Cancel</Text>
+        </TouchableOpacity>
       </View>
-
-      <ScrollView contentContainerStyle={styles.container}>
-        {/* Locations */}
-        <View style={styles.locationRow}>
-          <View style={styles.inputWithIcon}>
-            <Ionicons name="compass" size={18} color="#222" style={{ marginRight: 10 }} />
-            <TouchableOpacity style={{ flex: 1 }}>
-              <Text style={styles.placeholder}>Choose Start Location</Text>
-            </TouchableOpacity>
-          </View>
-
-          <View style={[styles.inputWithIcon, { marginTop: 14 }]}>
-            <Ionicons name="location" size={18} color="#222" style={{ marginRight: 10 }} />
-            <TouchableOpacity style={{ flex: 1 }}>
-              <Text style={styles.placeholder}>Choose End Location</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-
-        {/* Journey Details */}
-        <View style={styles.card}>
-          <Text style={styles.cardTitle}>Journey Details</Text>
-
-          <View style={{ marginTop: 12 }}>
-            <Text style={styles.label}>Purpose *</Text>
-            <TextInput
-              placeholder="e.g., Site Visit, meeting,..."
-              placeholderTextColor="#999"
-              value={purpose}
-              onChangeText={setPurpose}
-              style={styles.input}
-            />
-
-            <Text style={[styles.label, { marginTop: 12 }]}>Notes</Text>
-            <TextInput
-              placeholder="Add notes (optional)"
-              placeholderTextColor="#999"
-              value={notes}
-              onChangeText={setNotes}
-              style={[styles.input, { height: 100, textAlignVertical: "top" }]}
-              multiline
-            />
-          </View>
-
-          <View style={{ marginTop: 18 }}>
-            <TouchableOpacity style={styles.primaryButton} onPress={handleStartJourney}>
-              <Link href="/User/(tabs)/home">
-              <Text style={styles.primaryButtonText}>Start Journey</Text>
-              </Link>
-            </TouchableOpacity>
-
-            <TouchableOpacity style={styles.ghostButton} onPress={() => alert("Cancelled")}>
-              <Link href="/User/(tabs)/home">
-              <Text style={styles.ghostButtonText}>Cancel</Text>
-              </Link>
-            </TouchableOpacity>
-          </View>
-        </View>
-
-        <View style={{ height: 40 }} />
-      </ScrollView>
-    </SafeAreaView>
+    </ScrollView>
   );
 }
 
-const windowWidth = Dimensions.get("window").width;
-
 const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: "#f3f2f0" },
-  header: {
-    backgroundColor: "#F7DF6E",
-    paddingHorizontal: 18,
-    paddingTop: 10,
-    paddingBottom: 18,
-    flexDirection: "row",
-    alignItems: "center",
-    borderBottomLeftRadius: 30,
-    borderBottomRightRadius: 30,
-    shadowColor: "#000",
-    shadowOpacity: 0.1,
-    shadowOffset: { width: 0, height: 3 },
-    shadowRadius: 4,
-    elevation: 4,
-  },
-  back: {
-    width: 36,
-    height: 36,
-    borderRadius: 10,
-    backgroundColor: "#fff",
-    alignItems: "center",
-    justifyContent: "center",
-    shadowColor: "#000",
-    shadowOpacity: 0.1,
-    shadowOffset: { width: 0, height: 2 },
-    shadowRadius: 3,
-    elevation: 3,
-    marginRight: 12,
-  },
-  headerTitle: {
-    fontSize: 18,
-    fontWeight: "700",
-    color: "#222",
-  },
-  container: { padding: 16 },
-  locationRow: { marginTop: 10 },
-  inputWithIcon: {
-    backgroundColor: "#fff",
-    borderRadius: 12,
-    padding: 12,
-    flexDirection: "row",
-    alignItems: "center",
-    shadowColor: "#000",
-    shadowOpacity: 0.05,
-    shadowOffset: { width: 0, height: 2 },
-    shadowRadius: 3,
-    elevation: 2,
-    marginBottom: 4,
-  },
-  placeholder: { color: "#222", fontSize: 14 },
-  card: {
-    marginTop: 18,
-    backgroundColor: "#fff",
-    borderRadius: 12,
-    padding: 16,
-    shadowColor: "#000",
-    shadowOpacity: 0.05,
-    shadowOffset: { width: 0, height: 2 },
-    shadowRadius: 3,
-    elevation: 2,
-  },
-  cardTitle: { fontWeight: "700", fontSize: 16, color: "#222" },
-  label: { marginBottom: 8, color: "#444" },
-  input: {
-    backgroundColor: "#fff",
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: "#EEE",
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    fontSize: 14,
-    shadowColor: "#000",
-    shadowOpacity: 0.02,
-    shadowOffset: { width: 0, height: 1 },
-    shadowRadius: 2,
-    elevation: 1,
-  },
-  primaryButton: {
-    marginTop: 8,
-    backgroundColor: "#222",
-    borderRadius: 10,
-    paddingVertical: 12,
-    alignItems: "center",
-  },
-  primaryButtonText: { color: "#fff", fontWeight: "700" },
-  ghostButton: {
-    marginTop: 10,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: "#222",
-    paddingVertical: 12,
-    alignItems: "center",
-  },
-  ghostButtonText: { color: "#222", fontWeight: "700" },
+  heading: { fontSize: 22, fontWeight: "bold", marginBottom: 10 },
+  input: { borderWidth: 1, padding: 10, marginVertical: 5, borderRadius: 5 },
+  buttonBlack: { backgroundColor: "black", padding: 14, borderRadius: 6, marginVertical: 5 },
+  buttonGray: { backgroundColor: "gray", padding: 14, borderRadius: 6, marginVertical: 5 },
+  buttonText: { color: "#fff", textAlign: "center", fontWeight: "bold" },
 });

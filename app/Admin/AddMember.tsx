@@ -40,7 +40,7 @@ export default function AddMember() {
       const payload = { name, email, password, role };
       console.log("📨 Sending request:", payload);
 
-      const res = await fetch("http://192.168.1.4:5000/api/admin/members/add", {
+      const res = await fetch("http://192.168.1.18:5000/api/admin/members/add", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
